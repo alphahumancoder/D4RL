@@ -8,7 +8,8 @@ from d4rl.locomotion.wrappers import NormalizedBoxEnv
 import torch
 from PIL import Image
 import os
-
+import agent
+import water_env
 
 def reset_data():
     return {'observations': [],
@@ -68,6 +69,8 @@ def main():
     parser.add_argument('--multi_start', action='store_true')
     parser.add_argument('--multigoal', action='store_true')
     args = parser.parse_args()
+    agent.load_state_dict(torch.load(args.policy_file))
+    
 
     if args.maze == 'umaze':
         maze = maze_env.U_MAZE
@@ -81,6 +84,8 @@ def main():
         maze = maze_env.BIG_MAZE_EVAL
     elif args.maze == 'large_eval':
         maze = maze_env.HARDEST_MAZE_EVAL
+    elif args.maze='under_water':
+        maze = water_env()
     else:
         raise NotImplementedError
     
@@ -98,51 +103,35 @@ def main():
 
     # Load the policy
     policy, train_env = load_policy(args.policy_file)
-
+    # 
     # Define goal reaching policy fn
-    def _goal_reaching_policy_fn(obs, goal):
-        goal_x, goal_y = goal
-        obs_new = obs[2:-2]
-        goal_tuple = np.array([goal_x, goal_y])
 
-        # normalize the norm of the relative goals to in-distribution values
-        goal_tuple = goal_tuple / np.linalg.norm(goal_tuple) * 10.0
-
-        new_obs = np.concatenate([obs_new, goal_tuple], -1)
-        return policy.get_action(new_obs)[0], (goal_tuple[0] + obs[0], goal_tuple[1] + obs[1])      
 
     data = reset_data()
 
     # create waypoint generating policy integrated with high level controller
-    data_collection_policy = env.create_navigation_policy(
-        _goal_reaching_policy_fn,
-    )
+
 
     if args.video:
         frames = []
     
     ts = 0
     num_episodes = 0
+    s=maze.reset()
     for _ in range(args.num_samples):
-        act, waypoint_goal = data_collection_policy(s)
-
+        act = agent(s)
         if args.noisy:
             act = act + np.random.randn(*act.shape)*0.2
             act = np.clip(act, -1.0, 1.0)
-
         ns, r, done, info = env.step(act)
         timeout = False
         if ts >= args.max_episode_steps:
             timeout = True
             #done = True
-        
         append_data(data, s[:-2], act, r, env.target_goal, done, timeout, env.physics.data)
-
         if len(data['observations']) % 10000 == 0:
             print(len(data['observations']))
-
         ts += 1
-
         if done or timeout:
             done = False
             ts = 0
@@ -151,16 +140,13 @@ def main():
             if args.video:
                 frames = np.array(frames)
                 save_video('./videos/', args.env + '_navigation', frames, num_episodes)
-            
             num_episodes += 1
             frames = []
         else:
             s = ns
-
         if args.video:
             curr_frame = env.physics.render(width=500, height=500, depth=False)
             frames.append(curr_frame)
-    
     if args.noisy:
         fname = args.env + '_maze_%s_noisy_multistart_%s_multigoal_%s.hdf5' % (args.maze, str(args.multi_start), str(args.multigoal))
     else:
